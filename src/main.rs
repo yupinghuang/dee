@@ -1,8 +1,17 @@
-use dee::Protection;
+mod systemd;
 
-#[macro_use] extern crate rocket;
+//#[macro_use] extern crate rocket;
 use rocket_okapi::{openapi, openapi_get_routes, swagger_ui::*};
 use rocket::serde::json::Json;
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Protection {
+    // uid of the user
+    pub uid: u32,
+    /// The current username of the user.
+    pub username: String,
+}
 
 #[openapi(tag = "Users")]
 #[get("/user/<uid>")]

@@ -1,10 +1,12 @@
+use ambassador::{delegatable_trait, Delegate};
 use serde::{Deserialize, Serialize};
 use zbus;
 use zbus::{
     dbus_proxy,
     zvariant::ObjectPath,
-    Connection
 };
+
+type Properties = Vec<(String, String)>;
 
 pub type Weight = u16;
 
@@ -38,38 +40,54 @@ pub struct Policy {
     pub task_max: Option<u64>, // TODO: Memory Pressure Control
 }
 
-pub async fn elevate_service(conn: &Connection, name: &str) -> zbus::Result<()> {
-    let proxy = SystemdManagerProxy::new(conn).await?;
-    let unit = proxy.get_unit(name).await?;
-    let unit_id = unit.id().await?;
-    let properties = vec!["Slice".to_string()];
-    proxy.SetUnitProperties(&unit_id, true, properties).await?;
-    Ok(())
+#[delegatable_trait]
+trait SystemdUnit {
+    fn set_properties(&self, runtime: bool, properties: Properties) -> zbus::Result<()>;
+    fn id(&self) -> zbus::Result<String>;
+    fn transient(&self) -> zbus::Result<bool>;
 }
 
-//pub async fn elevate_slice(conn: &Connection, name: &str) -> zbus::Result<()> {
-//    let proxy = SystemdManagerProxy::new(conn).await?;
-//    let slice = proxy.get_unit(name).await?;
-//    let slice_id = slice.slice().await?;
-//    let properties = vec!["Slice".to_string()];
-//    proxy.SetUnitProperties(&slice_id, true, properties).await?;
-//    Ok(())
-//}
+#[delegatable_trait]
+trait SystemdService {
+    fn slice(&self) -> zbus::Result<String>;
+}
+#[delegatable_trait]
+trait SystemdSlice {
+    fn slice(&self) -> zbus::Result<String>;
+    fn control_group(&self) -> zbus::Result<String>;
+    fn cpu_accounting(&self) -> zbus::Result<bool>;
+    fn cpu_shares(&self) -> zbus::Result<u64>;
+    fn block_io_accounting(&self) -> zbus::Result<bool>;
+    fn block_io_weight(&self) -> zbus::Result<u64>;
+    fn block_io_device_weight(&self) -> zbus::Result<Vec<(String, u64)>>;
+    fn block_io_read_bandwidth(&self) -> zbus::Result<Vec<(String, u64)>>;
+    fn block_io_write_bandwidth(&self) -> zbus::Result<Vec<(String, u64)>>;
+    fn memory_accounting(&self) -> zbus::Result<bool>;
+    fn memory_limit(&self) -> zbus::Result<u64>;
+    fn device_policy(&self) -> zbus::Result<String>;
+    fn device_allow(&self) -> zbus::Result<Vec<(String, String)>>;
+}
+
 
 #[dbus_proxy(
     interface = "org.freedesktop.systemd1.Unit",
-    default_service = "org.freedesktop.systemd1"
+    default_service = "org.freedesktop.systemd1",
 )]
-trait SystemdUnit {
+trait Systemd1Unit {
     #[dbus_proxy(property)]
     fn id(&self) -> zbus::Result<String>;
+
+    #[dbus_proxy(property)]
+    fn transient(&self) -> zbus::Result<bool>;
+
+    fn set_properties(&self, runtime: bool, properties: Properties) -> zbus::Result<()>;
 }
 
 #[dbus_proxy(
     interface = "org.freedesktop.systemd1.Slice",
     default_service = "org.freedesktop.systemd1",
 )]
-trait SystemdSlice {
+trait Systemd1Slice {
 
     #[dbus_proxy(property)]
     fn slice(&self) -> zbus::Result<String>;
@@ -114,9 +132,9 @@ trait SystemdSlice {
 #[dbus_proxy(
     name = "org.freedesktop.systemd1.Manager",
     default_service = "org.freedesktop.systemd1",
-    default_path = "/org/freedesktop/systemd1"
+    default_path = "/org/freedesktop/systemd1",
 )]
-trait SystemdManager {
+trait Systemd1Manager {
     #[dbus_proxy(property)]
     fn version(&self) -> zbus::Result<String>;
 
@@ -127,58 +145,57 @@ trait SystemdManager {
         &self,
         name: &str,
         runtime: bool,
-        properties: Vec<String>,
+        properties: Properties,
     ) -> zbus::Result<()>;
 
     fn get_default_target(&self) -> zbus::Result<String>;
 
-    #[dbus_proxy(object = "SystemdUnit")]
+    #[dbus_proxy(object = "Systemd1Unit")]
     fn get_unit(&self, name: &str);
 }
 
-impl<'a> SystemdSliceProxy<'a> {
-    async fn from<'b>(u: &'b SystemdUnitProxy<'b>) -> zbus::Result<SystemdSliceProxy<'b>> {
-        let p = u.path().clone();
-        let s = SystemdSliceProxy::builder(u.connection())
-            .path(p)?
-            .build()
-            .await?;
-        Ok(s)
+#[derive(Delegate)]
+#[delegate(SystemdUnit, target = "unit")]
+#[delegate(SystemdSlice, target = "slice")]
+struct SliceUnitProxy<'a> {
+    unit: Systemd1UnitProxyBlocking<'a>,
+    slice: Systemd1SliceProxyBlocking<'a>,
+}
+
+impl TryFrom<Systemd1UnitProxyBlocking<'_>> for SliceUnitProxy<'_> {
+    type Error = zbus::Error;
+    fn try_from(u: Systemd1UnitProxyBlocking<'_>) -> Result<Self, Self::Error> {
+        Ok(Self { unit: u,
+            slice: Systemd1SliceProxyBlocking::builder(&u.connection())
+            .path(u.path().to_owned())?
+            .build()?})
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rocket::tokio;
-    use zbus::Connection;
+    use zbus::blocking::Connection;
 
-    async fn setup<'a>() -> zbus::Result<(Connection, SystemdManagerProxy<'a>)> {
-        let conn = Connection::system().await?;
-        let proxy = SystemdManagerProxy::new(&conn).await?;
+    fn setup<'a>() -> zbus::Result<(Connection, Systemd1ManagerProxyBlocking<'a>)> {
+        let conn = Connection::system()?;
+        let proxy = Systemd1ManagerProxyBlocking::new(&conn)?;
         Ok((conn, proxy))
     }
 
-    #[tokio::test]
-    async fn test_systemd() {
-        let (_conn, proxy) = setup().await.unwrap();
-        let result = proxy.get_default_target().await.unwrap();
+    fn test_systemd() -> zbus::Result<()> {
+        let (_conn, proxy) = setup()?;
+        let result = proxy.get_default_target()?;
         assert_eq!(result, "default.target");
+        Ok((()))
     }
 
-    #[tokio::test]
-    async fn test_systemd_unit() {
-        let (_conn, proxy) = setup().await.unwrap();
-        let result = proxy.get_unit("default.target").await.unwrap();
-        assert_eq!(result.id().await.unwrap(), "default.target");
+    #[test]
+    fn test_systemd_unit() -> zbus::Result<()> {
+        let (_conn, proxy) = setup()?;
+        let result = proxy.get_unit("default.target")?;
+        assert_eq!(result.id()?, "default.target");
+        Ok(())
     }
 
-    #[tokio::test]
-    async fn convert_unit_to_slice() {
-        let (_conn, proxy) = setup().await.unwrap();
-        let unit = proxy.get_unit("user.slice").await.unwrap();
-        let slice = SystemdSliceProxy::from(&unit).await.unwrap();
-        assert_eq!(slice.path(), unit.path());
-        assert_eq!(slice.path().to_string(), String::from("/org/freedesktop/systemd1/unit/user_2eslice"));
-    }
 }
