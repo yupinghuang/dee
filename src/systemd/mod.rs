@@ -1,12 +1,6 @@
-use ambassador::{delegatable_trait, Delegate};
 use serde::{Deserialize, Serialize};
-use zbus;
-use zbus::{
-    dbus_proxy,
-    zvariant::ObjectPath,
-};
 
-type Properties = Vec<(String, String)>;
+mod zbusproxy;
 
 pub type Weight = u16;
 
@@ -40,162 +34,54 @@ pub struct Policy {
     pub task_max: Option<u64>, // TODO: Memory Pressure Control
 }
 
-#[delegatable_trait]
-trait SystemdUnit {
-    fn set_properties(&self, runtime: bool, properties: Properties) -> zbus::Result<()>;
-    fn id(&self) -> zbus::Result<String>;
-    fn transient(&self) -> zbus::Result<bool>;
+
+trait Slice {}
+
+trait UserOrService {}
+
+//
+//                      -.slice
+//                     /       \
+//              /-----/         \--------------\
+//             /                                \
+//      system.slice                       user.slice
+//        /       \                          /      \
+//       /         \                        /        \
+//      /           \              user@42.service  user@1000.service
+//     /             \             Delegate=        Delegate=yes
+//a.service       b.slice                             /        \
+//CPUWeight=20   DisableControllers=cpu              /          \
+//                 /  \                      app.slice      session.slice
+//                /    \                     CPUWeight=100  CPUWeight=100
+//               /      \
+//       b1.service   b2.service
+//                    CPUWeight=1000
+
+// The name consists of a dash-separated series of names, which describes the
+// path to the slice from the root slice.
+// The root slice is named -.slice.
+// Example: foo-bar.slice is a slice that is located within foo.slice,
+// which in turn is located in the root slice -.slice. 
+
+// What do I wanna do
+
+// 1. essential.slice - this is static and can just be a file and specify it in unitfile
+// For example, every user gets their own slice user-nnn.slice.
+// 2. Make a user assignee to resources by moving its slice under user-asginee.slice
+// 3. Unasign previous asignee
+// 4. Make RAM reservation.
+// 5. Get status: how much RAM reserved
+
+
+fn new_slice(parent: &str) -> String{
+    unimplemented!()
 }
 
-#[delegatable_trait]
-trait SystemdService {
-    fn slice(&self) -> zbus::Result<String>;
-}
-#[delegatable_trait]
-trait SystemdSlice {
-    fn slice(&self) -> zbus::Result<String>;
-    fn control_group(&self) -> zbus::Result<String>;
-    fn cpu_accounting(&self) -> zbus::Result<bool>;
-    fn cpu_shares(&self) -> zbus::Result<u64>;
-    fn block_io_accounting(&self) -> zbus::Result<bool>;
-    fn block_io_weight(&self) -> zbus::Result<u64>;
-    fn block_io_device_weight(&self) -> zbus::Result<Vec<(String, u64)>>;
-    fn block_io_read_bandwidth(&self) -> zbus::Result<Vec<(String, u64)>>;
-    fn block_io_write_bandwidth(&self) -> zbus::Result<Vec<(String, u64)>>;
-    fn memory_accounting(&self) -> zbus::Result<bool>;
-    fn memory_limit(&self) -> zbus::Result<u64>;
-    fn device_policy(&self) -> zbus::Result<String>;
-    fn device_allow(&self) -> zbus::Result<Vec<(String, String)>>;
+fn assign_policy(thing: impl UserOrService, policy: &Policy) -> String{
+    unimplemented!()
 }
 
-
-#[dbus_proxy(
-    interface = "org.freedesktop.systemd1.Unit",
-    default_service = "org.freedesktop.systemd1",
-)]
-trait Systemd1Unit {
-    #[dbus_proxy(property)]
-    fn id(&self) -> zbus::Result<String>;
-
-    #[dbus_proxy(property)]
-    fn transient(&self) -> zbus::Result<bool>;
-
-    fn set_properties(&self, runtime: bool, properties: Properties) -> zbus::Result<()>;
+fn get_policy(thing: impl UserOrService) -> Policy{
+    unimplemented!()
 }
 
-#[dbus_proxy(
-    interface = "org.freedesktop.systemd1.Slice",
-    default_service = "org.freedesktop.systemd1",
-)]
-trait Systemd1Slice {
-
-    #[dbus_proxy(property)]
-    fn slice(&self) -> zbus::Result<String>;
-
-    #[dbus_proxy(property)]
-    fn control_group(&self) -> zbus::Result<String>;
-
-    #[dbus_proxy(property)]
-    fn cpu_accounting(&self) -> zbus::Result<bool>;
-
-    #[dbus_proxy(property)]
-    fn cpu_shares(&self) -> zbus::Result<u64>;
-
-    #[dbus_proxy(property)]
-    fn block_io_accounting(&self) -> zbus::Result<bool>;
-
-    #[dbus_proxy(property)]
-    fn block_io_weight(&self) -> zbus::Result<u64>;
-
-    #[dbus_proxy(property)]
-    fn block_io_device_weight(&self) -> zbus::Result<Vec<(String, u64)>>;
-
-    #[dbus_proxy(property)]
-    fn block_io_read_bandwidth(&self) -> zbus::Result<Vec<(String, u64)>>;
-
-    #[dbus_proxy(property)]
-    fn block_io_write_bandwidth(&self) -> zbus::Result<Vec<(String, u64)>>;
-
-    #[dbus_proxy(property)]
-    fn memory_accounting(&self) -> zbus::Result<bool>;
-
-    #[dbus_proxy(property)]
-    fn memory_limit(&self) -> zbus::Result<u64>;
-
-    #[dbus_proxy(property)]
-    fn device_policy(&self) -> zbus::Result<String>;
-
-    #[dbus_proxy(property)]
-    fn device_allow(&self) -> zbus::Result<Vec<(String, String)>>;
-}
-
-#[dbus_proxy(
-    name = "org.freedesktop.systemd1.Manager",
-    default_service = "org.freedesktop.systemd1",
-    default_path = "/org/freedesktop/systemd1",
-)]
-trait Systemd1Manager {
-    #[dbus_proxy(property)]
-    fn version(&self) -> zbus::Result<String>;
-
-    #[dbus_proxy(signal)]
-    fn UnitNew(&self, name: &str, unit: ObjectPath<'_>) -> zbus::Result<()>;
-
-    fn SetUnitProperties(
-        &self,
-        name: &str,
-        runtime: bool,
-        properties: Properties,
-    ) -> zbus::Result<()>;
-
-    fn get_default_target(&self) -> zbus::Result<String>;
-
-    #[dbus_proxy(object = "Systemd1Unit")]
-    fn get_unit(&self, name: &str);
-}
-
-#[derive(Delegate)]
-#[delegate(SystemdUnit, target = "unit")]
-#[delegate(SystemdSlice, target = "slice")]
-struct SliceUnitProxy<'a> {
-    unit: Systemd1UnitProxyBlocking<'a>,
-    slice: Systemd1SliceProxyBlocking<'a>,
-}
-
-impl TryFrom<Systemd1UnitProxyBlocking<'_>> for SliceUnitProxy<'_> {
-    type Error = zbus::Error;
-    fn try_from(u: Systemd1UnitProxyBlocking<'_>) -> Result<Self, Self::Error> {
-        Ok(Self { unit: u,
-            slice: Systemd1SliceProxyBlocking::builder(&u.connection())
-            .path(u.path().to_owned())?
-            .build()?})
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use zbus::blocking::Connection;
-
-    fn setup<'a>() -> zbus::Result<(Connection, Systemd1ManagerProxyBlocking<'a>)> {
-        let conn = Connection::system()?;
-        let proxy = Systemd1ManagerProxyBlocking::new(&conn)?;
-        Ok((conn, proxy))
-    }
-
-    fn test_systemd() -> zbus::Result<()> {
-        let (_conn, proxy) = setup()?;
-        let result = proxy.get_default_target()?;
-        assert_eq!(result, "default.target");
-        Ok((()))
-    }
-
-    #[test]
-    fn test_systemd_unit() -> zbus::Result<()> {
-        let (_conn, proxy) = setup()?;
-        let result = proxy.get_unit("default.target")?;
-        assert_eq!(result.id()?, "default.target");
-        Ok(())
-    }
-
-}

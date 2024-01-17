@@ -1,8 +1,11 @@
 mod systemd;
 
-//#[macro_use] extern crate rocket;
+#[macro_use] extern crate rocket;
+
+use schemars::JsonSchema;
 use rocket_okapi::{openapi, openapi_get_routes, swagger_ui::*};
 use rocket::serde::json::Json;
+use rocket::serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
